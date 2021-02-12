@@ -1,11 +1,5 @@
 #include "ComputeShaderDeclaration.h"
 
-#include "GlobalShader.h"
-#include "ShaderParameterStruct.h"
-#include "RenderGraphUtils.h"
-#include "RenderTargetPool.h"
-
-
 #include "Modules/ModuleManager.h"
 
 #define NUM_THREADS_PER_GROUP_DIMENSION 32
@@ -68,19 +62,28 @@ void FWhiteNoiseCSManager::BeginRendering()
 		return;
 	}
 	bCachedParamsAreValid = false;
-	//Get the Renderer Module and add our entry to the callbacks so it can be executed each frame after the scene rendering is done
+	// Get the Renderer Module and add our entry to the callbacks so it can be executed each frame after the scene rendering is done
 	const FName RendererModuleName("Renderer");
 	IRendererModule* RendererModule = FModuleManager::GetModulePtr<IRendererModule>(RendererModuleName);
 	if (RendererModule)
 	{
-		OnPostResolvedSceneColorHandle = RendererModule->GetResolvedSceneColorCallbacks().AddRaw(this, &FWhiteNoiseCSManager::Execute_RenderThread);
+		OnPostResolvedSceneColorHandle = RendererModule->GetResolvedSceneColorCallbacks().AddRaw(this, &FWhiteNoiseCSManager::Execute_Graph);
 	}
+	// check(IsInGameThread());
+	// ENQUEUE_RENDER_COMMAND(CaptureCommand)
+	// 	(
+	// 		[](FRHICommandListImmediate& RHICmdList)
+	// 		{
+	// 			FWhiteNoiseCSManager::Get()->UpdateResults(RHICmdList);
+	// 		}
+	// 	);
+	
 }
 
 //Stop the compute shader execution
 void FWhiteNoiseCSManager::EndRendering()
 {
-	//If the handle is not valid then there's no cleanup to do
+	// If the handle is not valid then there's no cleanup to do
 	if (!OnPostResolvedSceneColorHandle.IsValid())
 	{
 		return;
@@ -102,6 +105,60 @@ void FWhiteNoiseCSManager::UpdateParameters(FWhiteNoiseCSParameters& params)
 {
 	cachedParams = params;
 	bCachedParamsAreValid = true;
+}
+
+
+void FWhiteNoiseCSManager::AddWhiteNoisePass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap,
+											 TRefCountPtr<IPooledRenderTarget> OutputUAV, FRDGTextureUAVRef DstTexture)
+{
+    TShaderMapRef<FWhiteNoiseCS> WhiteNoiseCS(ShaderMap);
+    FWhiteNoiseCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FWhiteNoiseCS::FParameters>();
+
+	PassParameters->OutputTexture = OutputUAV->GetRenderTargetItem().UAV;
+	PassParameters->Dimensions = FVector2D(cachedParams.GetRenderTargetSize().X, cachedParams.GetRenderTargetSize().Y);
+	PassParameters->TimeStamp = cachedParams.TimeStamp;
+
+    FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("ComputeWhiteNoise"), WhiteNoiseCS, PassParameters,
+                                 FIntVector(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
+                                            FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1));
+}
+
+
+void FWhiteNoiseCSManager::UpdateResults(FRHICommandListImmediate& RHICmdList)
+{
+    check(IsInRenderingThread());
+	const ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
+    FTexture2DRHIRef OutTexture = cachedParams.RenderTarget->GetRenderTargetResource()->GetRenderTargetTexture();
+	FRDGTextureDesc TexDesc = FRDGTextureDesc::Create2DDesc(cachedParams.GetRenderTargetSize(),
+															cachedParams.RenderTarget->GetRenderTargetResource()->TextureRHI->GetFormat(),
+															FClearValueBinding::None, TexCreate_None,
+															TexCreate_ShaderResource | TexCreate_UAV, false);
+    // FRDGTextureDesc TexDesc = FRDGTextureDesc::Create2DDesc(FluidSurfaceSize, PF_G32R32F, FClearValueBinding(FLinearColor::Black), TexCreate_None, TexCreate_UAV | TexCreate_ShaderResource, false);
+    TRefCountPtr<IPooledRenderTarget> PooledDivergenceField;
+    GRenderTargetPool.FindFreeElement(RHICmdList, TexDesc, PooledDivergenceField, TEXT("DivergenceField"));
+    FRDGBuilder GraphBuilder(RHICmdList);
+	FRDGTextureRef DivergenceField = GraphBuilder.RegisterExternalTexture(PooledDivergenceField, TEXT("DivergenceField"), ERDGResourceFlags::MultiFrame);
+	FRDGTextureUAVRef DivergenceFieldUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(DivergenceField));
+	
+	AddWhiteNoisePass(GraphBuilder, ShaderMap, PooledDivergenceField, DivergenceFieldUAV);
+	GraphBuilder.QueueTextureExtraction(DivergenceField, &PooledDivergenceField);
+    GraphBuilder.Execute();
+	RHICmdList.CopyTexture(PooledDivergenceField->GetRenderTargetItem().ShaderResourceTexture,  OutTexture->GetTexture2D(), FRHICopyTextureInfo());
+}
+
+void FWhiteNoiseCSManager::Execute_Graph(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext)
+{
+	//If there's no cached parameters to use, skip
+	//If no Render Target is supplied in the cachedParams, skip
+	if (!(bCachedParamsAreValid && cachedParams.RenderTarget))
+	{
+		return;
+	}
+
+	//Render Thread Assertion
+	check(IsInRenderingThread());
+	FWhiteNoiseCSManager::Get()->UpdateResults(RHICmdList);
 }
 
 
@@ -149,7 +206,7 @@ void FWhiteNoiseCSManager::Execute_RenderThread(FRHICommandListImmediate& RHICmd
 	TShaderMapRef<FWhiteNoiseCS> whiteNoiseCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 
 	//Dispatch the compute shader
-	FComputeShaderUtils::Dispatch(RHICmdList, *whiteNoiseCS, PassParameters,
+	FComputeShaderUtils::Dispatch(RHICmdList, whiteNoiseCS, PassParameters,
 		FIntVector(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
 			FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1));
 

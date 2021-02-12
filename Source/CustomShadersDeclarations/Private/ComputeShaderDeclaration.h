@@ -1,6 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GlobalShader.h"
+#include "ShaderParameterStruct.h"
+#include "RenderGraphUtils.h"
+#include "RenderTargetPool.h"
 #include "Runtime/Engine/Classes/Engine/TextureRenderTarget2D.h"
 
 //This struct act as a container for all the parameters that the client needs to pass to the Compute Shader Manager.
@@ -50,6 +54,11 @@ public:
 
 	// Call this whenever you have new parameters to share.
 	void UpdateParameters(FWhiteNoiseCSParameters& DrawParameters);
+
+	void UpdateResults(FRHICommandListImmediate& RHICmdList);
+	
+	void AddWhiteNoisePass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap,
+						   TRefCountPtr<IPooledRenderTarget> OutputUAV, FRDGTextureUAVRef DstTexture);
 	
 private:
 	//Private constructor to prevent client from instanciating
@@ -71,4 +80,5 @@ private:
 	TRefCountPtr<IPooledRenderTarget> ComputeShaderOutput;
 public:
 	void Execute_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext);
+	void Execute_Graph(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext);
 };
