@@ -1,6 +1,6 @@
 #include "/Engine/Public/Platform.ush"
 
-RWTexture2D<float> OutputTexture;
+RWTexture2D<float3> OutputTexture;
 float2 Dimensions;
 uint TimeStamp;
 
@@ -22,5 +22,5 @@ void MainComputeShader(uint3 Gid : SV_GroupID, //atm: -, 0...256, - in rows (Y) 
     float2 p = float2(DTid.xy * TimeStamp);
     float output = hash12(p);
     
-    OutputTexture[DTid.xy] = output;
+    OutputTexture[DTid.xy] = float3(output, output, output);
 }

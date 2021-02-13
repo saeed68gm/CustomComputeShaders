@@ -45,6 +45,7 @@ void AWhiteNoiseConsumer::Tick(float DeltaTime)
 	TimeStamp++;
 	parameters.TimeStamp = TimeStamp;
 	FWhiteNoiseCSManager::Get()->UpdateParameters(parameters);
+	FWhiteNoiseCSManager::Get()->BeginRendering();
 }
 
 // Called to bind functionality to input
