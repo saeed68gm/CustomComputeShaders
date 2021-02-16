@@ -23,6 +23,9 @@ public:
 		SHADER_PARAMETER_UAV(RWTexture2D<float>, OutputTexture)
 		SHADER_PARAMETER(FVector2D, Dimensions)
 		SHADER_PARAMETER(UINT, TimeStamp)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ClosestDepthTexture)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, PrevClosestDepthOutput)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, ParallaxRejectionMaskOutput)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -56,20 +59,6 @@ FWhiteNoiseCSManager* FWhiteNoiseCSManager::instance = nullptr;
 //Begin the execution of the compute shader each frame
 void FWhiteNoiseCSManager::BeginRendering()
 {
-	// //If the handle is already initalized and valid, no need to do anything
-	// if (OnPostResolvedSceneColorHandle.IsValid())
-	// {
-	// 	return;
-	// }
-	// bCachedParamsAreValid = false;
-	// // Get the Renderer Module and add our entry to the callbacks so it can be executed each frame after the scene rendering is done
-	// const FName RendererModuleName("Renderer");
-	// IRendererModule* RendererModule = FModuleManager::GetModulePtr<IRendererModule>(RendererModuleName);
-	// if (RendererModule)
-	// {
-	// 	OnPostResolvedSceneColorHandle = RendererModule->GetResolvedSceneColorCallbacks().AddRaw(this, &FWhiteNoiseCSManager::Execute_Graph);
-	// }
-	// check(IsInGameThread());
 	ENQUEUE_RENDER_COMMAND(CaptureCommand)
 		(
 			[](FRHICommandListImmediate& RHICmdList)
@@ -83,21 +72,6 @@ void FWhiteNoiseCSManager::BeginRendering()
 //Stop the compute shader execution
 void FWhiteNoiseCSManager::EndRendering()
 {
-	// // If the handle is not valid then there's no cleanup to do
-	// if (!OnPostResolvedSceneColorHandle.IsValid())
-	// {
-	// 	return;
-	// }
-
-	// //Get the Renderer Module and remove our entry from the ResolvedSceneColorCallbacks
-	// const FName RendererModuleName("Renderer");
-	// IRendererModule* RendererModule = FModuleManager::GetModulePtr<IRendererModule>(RendererModuleName);
-	// if (RendererModule)
-	// {
-	// 	RendererModule->GetResolvedSceneColorCallbacks().Remove(OnPostResolvedSceneColorHandle);
-	// }
-
-	// OnPostResolvedSceneColorHandle.Reset();
 }
 
 //Update the parameters by a providing an instance of the Parameters structure used by the shader manager
@@ -140,13 +114,29 @@ void FWhiteNoiseCSManager::UpdateResults(FRHICommandListImmediate& RHICmdList)
 															cachedParams.RenderTarget->GetRenderTargetResource()->TextureRHI->GetFormat(),
 															FClearValueBinding::None, TexCreate_None,
 															TexCreate_ShaderResource | TexCreate_UAV, false);
+	FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
+											cachedParams.GetRenderTargetSize(),
+											PF_R32_UINT,
+											FClearValueBinding::None,
+											/* InFlags = */ TexCreate_ShaderResource | TexCreate_UAV);
+	FRDGTextureDesc DescFloat = FRDGTextureDesc::Create2D(
+											cachedParams.GetRenderTargetSize(),
+											PF_G16R16,
+											FClearValueBinding::None,
+											/* InFlags = */ TexCreate_ShaderResource | TexCreate_UAV);
     // FRDGTextureDesc TexDesc = FRDGTextureDesc::Create2DDesc(FluidSurfaceSize, PF_G32R32F, FClearValueBinding(FLinearColor::Black), TexCreate_None, TexCreate_UAV | TexCreate_ShaderResource, false);
     TRefCountPtr<IPooledRenderTarget> PooledDivergenceField;
+	FRDGTextureRef ClosestDepthTexture;
+	FRDGTextureRef PrevClosestDepthTexture;
+	FRDGTextureRef ParallaxRejectionMaskTexture;
     GRenderTargetPool.FindFreeElement(RHICmdList, TexDesc, PooledDivergenceField, TEXT("DivergenceField"));
     FRDGBuilder GraphBuilder(RHICmdList);
 	FRDGTextureRef DivergenceField = GraphBuilder.RegisterExternalTexture(PooledDivergenceField, TEXT("DivergenceField"),
 																		  ERenderTargetTexture::ShaderResource, ERDGTextureFlags::MultiFrame);
 	FRDGTextureUAVRef DivergenceFieldUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(DivergenceField));
+	ClosestDepthTexture = GraphBuilder.CreateTexture(DescFloat, TEXT("TAA.ClosestDepthTexture"));
+	PrevClosestDepthTexture = GraphBuilder.CreateTexture(Desc, TEXT("TAA.PrevClosestDepthTexture"));
+	ParallaxRejectionMaskTexture = GraphBuilder.CreateTexture(DescFloat, TEXT("TAA.ParallaxRejectionMask"));
 
     TShaderMapRef<FWhiteNoiseCS> WhiteNoiseCS(ShaderMap);
     FWhiteNoiseCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FWhiteNoiseCS::FParameters>();
@@ -154,6 +144,9 @@ void FWhiteNoiseCSManager::UpdateResults(FRHICommandListImmediate& RHICmdList)
 	PassParameters->OutputTexture = PooledDivergenceField->GetRenderTargetItem().UAV;
 	PassParameters->Dimensions = FVector2D(cachedParams.GetRenderTargetSize().X, cachedParams.GetRenderTargetSize().Y);
 	PassParameters->TimeStamp = cachedParams.TimeStamp;
+	PassParameters->ClosestDepthOutput = GraphBuilder.CreateUAV(ClosestDepthTexture);
+	PassParameters->PrevClosestDepthOutput = GraphBuilder.CreateUAV(PrevClosestDepthTexture);
+	PassParameters->ParallaxRejectionMaskOutput = GraphBuilder.CreateUAV(ParallaxRejectionMaskTexture);
 
 	FIntVector ThreadGroupCount(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
 								FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1);

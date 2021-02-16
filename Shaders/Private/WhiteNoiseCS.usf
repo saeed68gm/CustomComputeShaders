@@ -3,6 +3,9 @@
 RWTexture2D<float3> OutputTexture;
 float2 Dimensions;
 uint TimeStamp;
+Texture2D<float> ClosestDepthTexture;
+Texture2D<uint> PrevClosestDepthTexture;
+RWTexture2D<float> ParallaxRejectionMaskOutput;
 
 
 float hash12(float2 p)
@@ -20,7 +23,24 @@ void MainComputeShader(uint3 Gid : SV_GroupID, //atm: -, 0...256, - in rows (Y) 
                        uint GI : SV_GroupIndex)            //atm: 0...256 in columns (X)           --> "flattened" index of a thread within a group)
 {   
     float2 p = float2(DTid.xy * TimeStamp);
+    float2 PixelPos = p;
     float output = hash12(p);
-    
+    float DeviceZ = ClosestDepthTexture[PixelPos];
+    float WorldDepth = ConvertFromDeviceZ(DeviceZ)
+    float HistoryClosestDeviceZ = f16tof32(PrevClosestDepthTexture[PixelPos]);
+    float HistoryClosestWorldDepth = ConvertFromDeviceZ(HistoryClosestDeviceZ);
+    float DepthRejection;
+    {
+        const float WorldDepthToPixelWorldRadius = GetTanHalfFieldOfView().x * InputInfo_ExtentInverse.x;
+        const float PixelDepthError = 3.0;
+        const float RadiusToDiamater = 2.0;
+
+        float WorldDepthEpsilon = (WorldDepthToPixelWorldRadius * RadiusToDiamater * PixelDepthError) * HistoryClosestWorldDepth;
+        float DeltaDepth = abs(HistoryClosestWorldDepth - WorldDepth);
+
+        DepthRejection = saturate(2.0 - DeltaDepth / WorldDepthEpsilon);
+        ParallaxRejectionMaskOutput[PixelPos] = DepthRejection;
+    }
+
     OutputTexture[DTid.xy] = float3(output, output, output);
 }

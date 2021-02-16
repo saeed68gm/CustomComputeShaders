@@ -20,7 +20,7 @@ AWhiteNoiseConsumer::AWhiteNoiseConsumer()
 void AWhiteNoiseConsumer::BeginPlay()
 {
 	Super::BeginPlay();
-	FWhiteNoiseCSManager::Get()->BeginRendering();
+	// FWhiteNoiseCSManager::Get()->BeginRendering();
 
 
 	//Assuming that the static mesh is already using the material that we're targeting, we create an instance and assign it to it
