@@ -57,8 +57,8 @@ public:
 
 	void UpdateResults(FRHICommandListImmediate& RHICmdList);
 	
-	void AddWhiteNoisePass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap,
-						   TRefCountPtr<IPooledRenderTarget> OutputUAV, FRDGTextureUAVRef DstTexture);
+	// void AddWhiteNoisePass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap,
+	// 					   TRefCountPtr<IPooledRenderTarget> OutputUAV, FRDGTextureUAVRef DstTexture);
 	
 private:
 	//Private constructor to prevent client from instanciating
@@ -79,6 +79,5 @@ private:
 	//Reference to a pooled render target where the shader will write its output
 	TRefCountPtr<IPooledRenderTarget> ComputeShaderOutput;
 public:
-	void Execute_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext);
-	void Execute_Graph(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext);
+	// void Execute_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext);
 };

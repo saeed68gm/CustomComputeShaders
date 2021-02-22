@@ -19,6 +19,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ShaderDemo)
 		class UTextureRenderTarget2D* RenderTarget;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ShaderDemo)
+		class UTexture2D* DepthTexture;
 private:
 	uint32 TimeStamp;
 public:

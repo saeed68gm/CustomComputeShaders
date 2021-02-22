@@ -26,6 +26,7 @@ void AWhiteNoiseConsumer::BeginPlay()
 	//Assuming that the static mesh is already using the material that we're targeting, we create an instance and assign it to it
 	UMaterialInstanceDynamic* MID = static_mesh->CreateAndSetMaterialInstanceDynamic(0);
 	MID->SetTextureParameterValue("InputTexture", (UTexture*)RenderTarget);
+	MID->SetTextureParameterValue("DepthTexture", (UTexture*)DepthTexture);
 }
 
 void AWhiteNoiseConsumer::BeginDestroy()

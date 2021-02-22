@@ -20,12 +20,7 @@ public:
 	/// For each parameter, provide the C++ type, and the name (Same name used in HLSL code)
 	/// </summary>
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_UAV(RWTexture2D<float>, OutputTexture)
-		SHADER_PARAMETER(FVector2D, Dimensions)
-		SHADER_PARAMETER(UINT, TimeStamp)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ClosestDepthTexture)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, PrevClosestDepthOutput)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, ParallaxRejectionMaskOutput)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, OutputTexture)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -81,23 +76,6 @@ void FWhiteNoiseCSManager::UpdateParameters(FWhiteNoiseCSParameters& params)
 	bCachedParamsAreValid = true;
 }
 
-
-void FWhiteNoiseCSManager::AddWhiteNoisePass(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap,
-											 TRefCountPtr<IPooledRenderTarget> OutputUAV, FRDGTextureUAVRef DstTexture)
-{
-    TShaderMapRef<FWhiteNoiseCS> WhiteNoiseCS(ShaderMap);
-    FWhiteNoiseCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FWhiteNoiseCS::FParameters>();
-
-	PassParameters->OutputTexture = OutputUAV->GetRenderTargetItem().UAV;
-	PassParameters->Dimensions = FVector2D(cachedParams.GetRenderTargetSize().X, cachedParams.GetRenderTargetSize().Y);
-	PassParameters->TimeStamp = cachedParams.TimeStamp;
-
-    FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("ComputeWhiteNoise"), WhiteNoiseCS, PassParameters,
-                                 FIntVector(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
-                                            FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1));
-}
-
-
 void FWhiteNoiseCSManager::UpdateResults(FRHICommandListImmediate& RHICmdList)
 {
 	if (!(bCachedParamsAreValid && cachedParams.RenderTarget))
@@ -121,32 +99,21 @@ void FWhiteNoiseCSManager::UpdateResults(FRHICommandListImmediate& RHICmdList)
 											/* InFlags = */ TexCreate_ShaderResource | TexCreate_UAV);
 	FRDGTextureDesc DescFloat = FRDGTextureDesc::Create2D(
 											cachedParams.GetRenderTargetSize(),
-											PF_G16R16,
+											PF_R16F,
 											FClearValueBinding::None,
 											/* InFlags = */ TexCreate_ShaderResource | TexCreate_UAV);
     // FRDGTextureDesc TexDesc = FRDGTextureDesc::Create2DDesc(FluidSurfaceSize, PF_G32R32F, FClearValueBinding(FLinearColor::Black), TexCreate_None, TexCreate_UAV | TexCreate_ShaderResource, false);
-    TRefCountPtr<IPooledRenderTarget> PooledDivergenceField;
-	FRDGTextureRef ClosestDepthTexture;
-	FRDGTextureRef PrevClosestDepthTexture;
-	FRDGTextureRef ParallaxRejectionMaskTexture;
-    GRenderTargetPool.FindFreeElement(RHICmdList, TexDesc, PooledDivergenceField, TEXT("DivergenceField"));
+    TRefCountPtr<IPooledRenderTarget> PooledCustomTexture;
+    GRenderTargetPool.FindFreeElement(RHICmdList, TexDesc, PooledCustomTexture, TEXT("CustomTexture"));
     FRDGBuilder GraphBuilder(RHICmdList);
-	FRDGTextureRef DivergenceField = GraphBuilder.RegisterExternalTexture(PooledDivergenceField, TEXT("DivergenceField"),
+	FRDGTextureRef CustomTexture = GraphBuilder.RegisterExternalTexture(PooledCustomTexture, TEXT("CustomTexture"),
 																		  ERenderTargetTexture::ShaderResource, ERDGTextureFlags::MultiFrame);
-	FRDGTextureUAVRef DivergenceFieldUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(DivergenceField));
-	ClosestDepthTexture = GraphBuilder.CreateTexture(DescFloat, TEXT("TAA.ClosestDepthTexture"));
-	PrevClosestDepthTexture = GraphBuilder.CreateTexture(Desc, TEXT("TAA.PrevClosestDepthTexture"));
-	ParallaxRejectionMaskTexture = GraphBuilder.CreateTexture(DescFloat, TEXT("TAA.ParallaxRejectionMask"));
+	FRDGTextureUAVRef CustomTextureUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(CustomTexture));
 
     TShaderMapRef<FWhiteNoiseCS> WhiteNoiseCS(ShaderMap);
     FWhiteNoiseCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FWhiteNoiseCS::FParameters>();
 
-	PassParameters->OutputTexture = PooledDivergenceField->GetRenderTargetItem().UAV;
-	PassParameters->Dimensions = FVector2D(cachedParams.GetRenderTargetSize().X, cachedParams.GetRenderTargetSize().Y);
-	PassParameters->TimeStamp = cachedParams.TimeStamp;
-	PassParameters->ClosestDepthOutput = GraphBuilder.CreateUAV(ClosestDepthTexture);
-	PassParameters->PrevClosestDepthOutput = GraphBuilder.CreateUAV(PrevClosestDepthTexture);
-	PassParameters->ParallaxRejectionMaskOutput = GraphBuilder.CreateUAV(ParallaxRejectionMaskTexture);
+	PassParameters->OutputTexture = CustomTextureUAV;
 
 	FIntVector ThreadGroupCount(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
 								FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1);
@@ -158,24 +125,9 @@ void FWhiteNoiseCSManager::UpdateResults(FRHICommandListImmediate& RHICmdList)
 				FComputeShaderUtils::Dispatch(RHICmdList, WhiteNoiseCS, *PassParameters, ThreadGroupCount);
 			});
 
-	// AddWhiteNoisePass(GraphBuilder, ShaderMap, PooledDivergenceField, DivergenceFieldUAV);
-	GraphBuilder.QueueTextureExtraction(DivergenceField, &PooledDivergenceField);
+	// GraphBuilder.QueueTextureExtraction(CustomTexture, &PooledCustomTexture);
     GraphBuilder.Execute();
-	RHICmdList.CopyTexture(PooledDivergenceField->GetRenderTargetItem().ShaderResourceTexture,  OutTexture->GetTexture2D(), FRHICopyTextureInfo());
-}
-
-void FWhiteNoiseCSManager::Execute_Graph(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext)
-{
-	//If there's no cached parameters to use, skip
-	//If no Render Target is supplied in the cachedParams, skip
-	if (!(bCachedParamsAreValid && cachedParams.RenderTarget))
-	{
-		return;
-	}
-
-	//Render Thread Assertion
-	check(IsInRenderingThread());
-	FWhiteNoiseCSManager::Get()->UpdateResults(RHICmdList);
+	RHICmdList.CopyTexture(PooledCustomTexture->GetRenderTargetItem().ShaderResourceTexture,  OutTexture->GetTexture2D(), FRHICopyTextureInfo());
 }
 
 
@@ -184,50 +136,50 @@ void FWhiteNoiseCSManager::Execute_Graph(FRHICommandListImmediate& RHICmdList, c
 /// Gets a reference to the shader type from the global shaders map
 /// Dispatches the shader using the parameter structure instance
 /// </summary>
-void FWhiteNoiseCSManager::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext)
-{
-	//If there's no cached parameters to use, skip
-	//If no Render Target is supplied in the cachedParams, skip
-	if (!(bCachedParamsAreValid && cachedParams.RenderTarget))
-	{
-		return;
-	}
+// void FWhiteNoiseCSManager::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext)
+// {
+// 	//If there's no cached parameters to use, skip
+// 	//If no Render Target is supplied in the cachedParams, skip
+// 	if (!(bCachedParamsAreValid && cachedParams.RenderTarget))
+// 	{
+// 		return;
+// 	}
 
-	//Render Thread Assertion
-	check(IsInRenderingThread());
+// 	//Render Thread Assertion
+// 	check(IsInRenderingThread());
 
 
-	//If the render target is not valid, get an element from the render target pool by supplying a Descriptor
-	if (!ComputeShaderOutput.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Not Valid"));
-		FPooledRenderTargetDesc ComputeShaderOutputDesc(FPooledRenderTargetDesc::Create2DDesc(cachedParams.GetRenderTargetSize(), cachedParams.RenderTarget->GetRenderTargetResource()->TextureRHI->GetFormat(), FClearValueBinding::None, TexCreate_None, TexCreate_ShaderResource | TexCreate_UAV, false));
-		ComputeShaderOutputDesc.DebugName = TEXT("WhiteNoiseCS_Output_RenderTarget");
-		GRenderTargetPool.FindFreeElement(RHICmdList, ComputeShaderOutputDesc, ComputeShaderOutput, TEXT("WhiteNoiseCS_Output_RenderTarget"));
-	}
+// 	//If the render target is not valid, get an element from the render target pool by supplying a Descriptor
+// 	if (!ComputeShaderOutput.IsValid())
+// 	{
+// 		UE_LOG(LogTemp, Warning, TEXT("Not Valid"));
+// 		FPooledRenderTargetDesc ComputeShaderOutputDesc(FPooledRenderTargetDesc::Create2DDesc(cachedParams.GetRenderTargetSize(), cachedParams.RenderTarget->GetRenderTargetResource()->TextureRHI->GetFormat(), FClearValueBinding::None, TexCreate_None, TexCreate_ShaderResource | TexCreate_UAV, false));
+// 		ComputeShaderOutputDesc.DebugName = TEXT("WhiteNoiseCS_Output_RenderTarget");
+// 		GRenderTargetPool.FindFreeElement(RHICmdList, ComputeShaderOutputDesc, ComputeShaderOutput, TEXT("WhiteNoiseCS_Output_RenderTarget"));
+// 	}
 	
-	//Unbind the previously bound render targets
-	// UnbindRenderTargets(RHICmdList);
+// 	//Unbind the previously bound render targets
+// 	// UnbindRenderTargets(RHICmdList);
 
-	//Specify the resource transition, we're executing this in post scene rendering so we set it to Graphics to Compute
-	RHICmdList.TransitionResource(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EGfxToCompute, ComputeShaderOutput->GetRenderTargetItem().UAV);
+// 	//Specify the resource transition, we're executing this in post scene rendering so we set it to Graphics to Compute
+// 	RHICmdList.TransitionResource(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EGfxToCompute, ComputeShaderOutput->GetRenderTargetItem().UAV);
 
 
-	//Fill the shader parameters structure with tha cached data supplied by the client
-	FWhiteNoiseCS::FParameters PassParameters;
-	PassParameters.OutputTexture = ComputeShaderOutput->GetRenderTargetItem().UAV;
-	PassParameters.Dimensions = FVector2D(cachedParams.GetRenderTargetSize().X, cachedParams.GetRenderTargetSize().Y);
-	PassParameters.TimeStamp = cachedParams.TimeStamp;
+// 	//Fill the shader parameters structure with tha cached data supplied by the client
+// 	FWhiteNoiseCS::FParameters PassParameters;
+// 	PassParameters.OutputTexture = ComputeShaderOutput->GetRenderTargetItem().UAV;
+// 	PassParameters.Dimensions = FVector2D(cachedParams.GetRenderTargetSize().X, cachedParams.GetRenderTargetSize().Y);
+// 	PassParameters.TimeStamp = cachedParams.TimeStamp;
 
-	//Get a reference to our shader type from global shader map
-	TShaderMapRef<FWhiteNoiseCS> whiteNoiseCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+// 	//Get a reference to our shader type from global shader map
+// 	TShaderMapRef<FWhiteNoiseCS> whiteNoiseCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 
-	//Dispatch the compute shader
-	FComputeShaderUtils::Dispatch(RHICmdList, whiteNoiseCS, PassParameters,
-		FIntVector(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
-			FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1));
+// 	//Dispatch the compute shader
+// 	FComputeShaderUtils::Dispatch(RHICmdList, whiteNoiseCS, PassParameters,
+// 		FIntVector(FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().X, NUM_THREADS_PER_GROUP_DIMENSION),
+// 			FMath::DivideAndRoundUp(cachedParams.GetRenderTargetSize().Y, NUM_THREADS_PER_GROUP_DIMENSION), 1));
 
-	//Copy shader's output to the render target provided by the client
-	RHICmdList.CopyTexture(ComputeShaderOutput->GetRenderTargetItem().ShaderResourceTexture, cachedParams.RenderTarget->GetRenderTargetResource()->TextureRHI, FRHICopyTextureInfo());
+// 	//Copy shader's output to the render target provided by the client
+// 	RHICmdList.CopyTexture(ComputeShaderOutput->GetRenderTargetItem().ShaderResourceTexture, cachedParams.RenderTarget->GetRenderTargetResource()->TextureRHI, FRHICopyTextureInfo());
 
-}
+// }
